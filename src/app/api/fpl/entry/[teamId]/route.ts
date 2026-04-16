@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { FPL_HEADERS } from "../../headers";
 
 export async function GET(
   _req: Request,
@@ -7,7 +8,7 @@ export async function GET(
   const { teamId } = await params;
   const res = await fetch(
     `https://fantasy.premierleague.com/api/entry/${teamId}/`,
-    { next: { revalidate: 60 }, headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" } }
+    { next: { revalidate: 60 }, headers: FPL_HEADERS }
   );
 
   if (!res.ok) {
