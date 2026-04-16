@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FPLanner
+
+A tactical squad companion for Fantasy Premier League. Enter your FPL Team ID to preview upcoming fixture difficulty, view your squad on an interactive pitch, and get data-driven transfer recommendations.
+
+## Features
+
+- **Pitch View** — Visual 2D pitch layout with your current squad in formation
+- **Fixture Grid** — Scrollable fixture difficulty rating (FDR) table from the current gameweek through GW38
+- **Transfer Recommendations** — Server-side computed transfer suggestions based on fixture difficulty
+- **Dark / Light mode** — Themed to match the official FPL colour palette
+
+## Tech Stack
+
+- [Next.js](https://nextjs.org/) (App Router)
+- [Tailwind CSS v4](https://tailwindcss.com/)
+- [TypeScript](https://www.typescriptlang.org/)
+- FPL API (proxied via Next.js API routes)
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) and enter your FPL Team ID.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+> **Finding your Team ID:** Go to fantasy.premierleague.com → Points → click your team name → the number in the URL is your ID.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Environment Variables
 
-## Learn More
+Create a `.env.local` file at the project root:
 
-To learn more about Next.js, take a look at the following resources:
+```env
+NEXT_PUBLIC_BASE_URL=http://localhost:3000
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+In production (e.g. Vercel), set `VERCEL_URL` or `NEXT_PUBLIC_BASE_URL` to your deployment URL.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Project Structure
 
-## Deploy on Vercel
+```
+src/
+├── app/
+│   ├── api/fpl/        # Proxy routes for FPL API (CORS workaround)
+│   ├── team/[teamId]/  # Team page (server component)
+│   ├── globals.css     # CSS variables + Tailwind import
+│   ├── layout.tsx      # Font loading
+│   └── page.tsx        # Home — team ID input
+├── components/         # UI components (pitch, grid, sidebar, etc.)
+├── lib/
+│   └── fpl.ts          # Data fetching + transformation
+└── types/
+    └── fpl.ts          # FPL API + view-model types
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Disclaimer
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+This is an unofficial fan-made tool and is not affiliated with or endorsed by the Premier League or the official Fantasy Premier League product.
