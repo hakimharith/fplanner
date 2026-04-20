@@ -31,6 +31,9 @@ export interface FplPlayer {
   starts: number;
   // ICT
   ict_index: string;
+  influence: string;
+  creativity: string;
+  threat: string;
   // Form & projection
   points_per_game: string;
   ep_next: string;
@@ -90,6 +93,34 @@ export interface FplPickElement {
 export interface FplPicks {
   picks: FplPickElement[];
   active_chip: string | null;
+}
+
+export interface FplPlayerHistoryEntry {
+  round: number;
+  total_points: number;
+  opponent_team: number;
+  was_home: boolean;
+  minutes: number;
+}
+
+export interface FplPlayerSummary {
+  history: FplPlayerHistoryEntry[];
+}
+
+export interface BacktestPlayerResult {
+  id: number;
+  name: string;
+  teamShort: string;
+  position: number;
+  score: number;
+  gwPoints: { gw: number; points: number | null }[];
+  hitRate: number;
+}
+
+export interface BacktestReport {
+  players: BacktestPlayerResult[];
+  gwNumbers: number[];
+  seasonHitRate: number;
 }
 
 export interface FplEntryInfo {

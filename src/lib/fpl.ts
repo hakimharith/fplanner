@@ -5,6 +5,7 @@ import type {
   FplEntryInfo,
   FplPlayer,
   FplTeam,
+  FplPlayerSummary,
   SquadPlayerRow,
   PlayerFixtureCell,
   CaptainSuggestion,
@@ -38,6 +39,10 @@ export async function getEntryInfo(teamId: string): Promise<FplEntryInfo> {
 
 export async function getPicks(teamId: string, gw: number): Promise<FplPicks> {
   return fetchInternal<FplPicks>(`/api/fpl/picks/${teamId}/${gw}`);
+}
+
+export async function getPlayerSummary(playerId: number): Promise<FplPlayerSummary> {
+  return fetchInternal<FplPlayerSummary>(`/api/fpl/player-summary/${playerId}`);
 }
 
 // ── Transfer recommendation helpers ──────────────────────────────────────────
@@ -81,6 +86,88 @@ function nextFixturesForPlayer(
 
 /** Clamp a value to [0, 1]. */
 function clamp01(v: number): number { return Math.max(0, Math.min(1, v)); }
+
+// ── Improvement constants ─────────────────────────────────────────────────────
+
+/** GW+1 / GW+2 / GW+3 weights for the IN score FDR component. */
+const FDR_WEIGHTS = [0.5, 0.3, 0.2];
+
+/** ICT sub-component season-total caps (calibrated for mid-to-late season). */
+const ICT_INFLUENCE_CAP = 300;
+const ICT_CREATIVITY_CAP = 400;
+const ICT_THREAT_CAP = 600;
+
+/** FDR → form adjustment multiplier (Improvement 3: opponent-adjusted form). */
+const FDR_FORM_WEIGHT: Record<number, number> = { 1: 0.7, 2: 0.85, 3: 1.0, 4: 1.15, 5: 1.3 };
+
+/**
+ * GW-weighted FDR for the IN score.
+ * GW+1 = 50%, GW+2 = 30%, GW+3 = 20%. BGW = 5 (worst). Also returns
+ * whether GW+1 is a blank (to cap the FDR score).
+ */
+function weightedFdrForPlayer(
+  teamId: number,
+  fixtureMap: Map<number, Map<number, FixtureEntry[]>>,
+  gwsToCheck: number[]
+): { weightedAvg: number; hasBlankGw1: boolean } {
+  const gwMap = fixtureMap.get(teamId);
+  if (!gwMap) return { weightedAvg: 5, hasBlankGw1: true };
+
+  let weightedSum = 0;
+  for (let i = 0; i < gwsToCheck.length; i++) {
+    const gw = gwsToCheck[i];
+    const w = FDR_WEIGHTS[i] ?? 0;
+    const entries = gwMap.get(gw) ?? [];
+    if (entries.length === 0) {
+      weightedSum += 5 * w; // BGW = worst
+    } else {
+      const avgGwFdr = entries.reduce((s, e) => s + e.fdr, 0) / entries.length;
+      weightedSum += avgGwFdr * w;
+    }
+  }
+
+  const hasBlankGw1 = (gwMap.get(gwsToCheck[0]) ?? []).length === 0;
+  return { weightedAvg: weightedSum, hasBlankGw1 };
+}
+
+/**
+ * Build opponent-adjusted form for the given player IDs.
+ * Fetches last-N GW history per player and weights each GW's points by the
+ * opposition FDR (harder opponent = higher multiplier).
+ */
+async function buildAdjustedFormMap(
+  playerIds: number[],
+  playerTeamMap: Map<number, number>,
+  fixtureMap: Map<number, Map<number, FixtureEntry[]>>,
+  last5Gws: number[]
+): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+
+  await Promise.all(
+    playerIds.map(async (id) => {
+      try {
+        const summary = await getPlayerSummary(id);
+        const recent = summary.history.filter((h) => last5Gws.includes(h.round));
+        if (recent.length === 0) return;
+
+        let totalWeighted = 0;
+        for (const entry of recent) {
+          const teamId = playerTeamMap.get(id);
+          const gwFixtures = teamId ? (fixtureMap.get(teamId)?.get(entry.round) ?? []) : [];
+          const fdr = gwFixtures[0]?.fdr ?? 3;
+          const w = FDR_FORM_WEIGHT[fdr] ?? 1.0;
+          totalWeighted += entry.total_points * w;
+        }
+
+        map.set(id, totalWeighted / recent.length);
+      } catch {
+        // fall back to raw form
+      }
+    })
+  );
+
+  return map;
+}
 
 /**
  * Compute OUT score (0–100) for a squad player.
@@ -149,6 +236,11 @@ function computeOutScore(
 /**
  * Compute IN score (0–100) for a candidate player.
  * Higher = better pickup.
+ *
+ * Improvements over v1:
+ *   1. GW-weighted FDR (GW+1=50%, GW+2=30%, GW+3=20%) with blank GW+1 cap.
+ *   2. ICT decomposition for MID/FWD (influence + creativity + threat).
+ *   3. Opponent-adjusted form via optional adjustedFormMap.
  */
 function computeInScore(
   player: FplPlayer,
@@ -156,24 +248,27 @@ function computeInScore(
   teamMap: Map<number, FplTeam>,
   next3Gws: number[],
   totalManagers: number,
-  currentGw: number
+  currentGw: number,
+  adjustedFormMap?: Map<number, number>
 ): number {
   const pos = player.element_type;
-  const form = parseFloat(player.form) || 0;
-  const xgi90 = player.expected_goal_involvements_per_90 ?? 0;
+  const rawForm = parseFloat(player.form) || 0;
+  const effectiveForm = adjustedFormMap?.get(player.id) ?? rawForm;
   const xgc90 = player.expected_goals_conceded_per_90 ?? 1.5;
   const defContrib90 = player.defensive_contribution_per_90 ?? 0;
   const epNext = parseFloat(player.ep_next) || 0;
   const selectedPct = parseFloat(player.selected_by_percent) || 0;
   const transfersIn = player.transfers_in_event ?? 0;
   const minutes = player.minutes ?? 0;
-  const avgFdr = avgFdrForPlayer(player.team, fixtureMap, next3Gws);
+  const { weightedAvg: wFdr, hasBlankGw1 } = weightedFdrForPlayer(player.team, fixtureMap, next3Gws);
 
   // suppress unused variable warning
   void teamMap;
 
-  // 1. FDR component (30 pts max) — easy fixtures = high score
-  const fdrScore = clamp01((5 - avgFdr) / 4) * 30;
+  // 1. FDR component (30 pts max) — GW-weighted, easy fixtures = high score
+  //    If blank in GW+1, cap at 5/30 (player can't score this week).
+  let fdrScore = clamp01((5 - wFdr) / 4) * 30;
+  if (hasBlankGw1) fdrScore = Math.min(fdrScore, 5);
 
   // 2. Quality component (20 pts max) — position-specific
   let qualityScore: number;
@@ -183,18 +278,22 @@ function computeInScore(
     const defComponent = clamp01(defContrib90 / 0.8) * 8;
     qualityScore = xgcComponent + defComponent;
   } else {
-    // MID/FWD: reward high xGI/90. FWD gets extra weight.
-    const xgiCap = pos === 4 ? 0.70 : 0.60;
-    qualityScore = clamp01(xgi90 / xgiCap) * 20;
+    // MID/FWD: ICT decomposition — influence (8) + creativity (7) + threat (5)
+    const influence = parseFloat(player.influence) || 0;
+    const creativity = parseFloat(player.creativity) || 0;
+    const threat = parseFloat(player.threat) || 0;
+    const influenceScore = clamp01(influence / ICT_INFLUENCE_CAP) * 8;
+    const creativityScore = clamp01(creativity / ICT_CREATIVITY_CAP) * 7;
+    const threatScore = clamp01(threat / ICT_THREAT_CAP) * 5;
+    qualityScore = influenceScore + creativityScore + threatScore;
   }
 
-  // 3. Playing time reliability (15 pts max) — penalises bench-warmers and non-starters
-  // A full-time starter in ~30 GWs ≈ 2700 mins. Scale against that.
+  // 3. Playing time reliability (15 pts max)
   const maxExpectedMins = currentGw * 90;
   const minutesScore = clamp01(minutes / maxExpectedMins) * 15;
 
-  // 4. Form component (12 pts max)
-  const formScore = clamp01(form / 12) * 12;
+  // 4. Form component (12 pts max) — opponent-adjusted if available
+  const formScore = clamp01(effectiveForm / 12) * 12;
 
   // 5. ep_next component (10 pts max) — FPL's own oracle
   const epScore = clamp01(epNext / 15) * 10;
@@ -327,15 +426,16 @@ function generateInReasons(player: TransferPlayer, raw: FplPlayer): string[] {
   return reasons.slice(0, 3);
 }
 
-function computeTransferLists(
+async function computeTransferLists(
   squadRows: SquadPlayerRow[],
   allPlayers: FplPlayer[],
   teamMap: Map<number, FplTeam>,
   fixtureMap: Map<number, Map<number, FixtureEntry[]>>,
   next3Gws: number[],
   totalManagers: number,
-  currentGw: number
-): { outs: TransferOutCandidate[]; ins: TransferInCandidate[] } {
+  currentGw: number,
+  last5Gws: number[]
+): Promise<{ outs: TransferOutCandidate[]; ins: TransferInCandidate[] }> {
   const squadIds = new Set(squadRows.map((r) => r.id));
   const playerMap = new Map(allPlayers.map((p) => [p.id, p]));
 
@@ -354,25 +454,52 @@ function computeTransferLists(
     .sort((a, b) => b.score - a.score)
     .slice(0, 11);
 
-  // ── IN list: rank non-squad players by in-score ────────────────────────────
+  // ── IN list: two-pass with opponent-adjusted form ──────────────────────────
   const MIN_MINUTES = 90;
-  const ins: TransferInCandidate[] = allPlayers
-    .filter(
-      (p) =>
-        !squadIds.has(p.id) &&
-        (p.status === "a" || p.status === "d") &&
-        (p.minutes ?? 0) >= MIN_MINUTES
-    )
+  const candidates = allPlayers.filter(
+    (p) =>
+      !squadIds.has(p.id) &&
+      (p.status === "a" || p.status === "d") &&
+      (p.minutes ?? 0) >= MIN_MINUTES
+  );
+
+  // First pass: score all candidates without adjusted form
+  const firstPass = candidates
     .flatMap((p) => {
       const team = teamMap.get(p.team);
       if (!team) return [];
-      const score = Math.round(computeInScore(p, fixtureMap, teamMap, next3Gws, totalManagers, currentGw));
-      const player = buildTransferPlayer(p, team, fixtureMap, teamMap, next3Gws);
-      const reasons = generateInReasons(player, p);
-      return [{ ...player, score, reasons }];
+      const score = computeInScore(p, fixtureMap, teamMap, next3Gws, totalManagers, currentGw);
+      return [{ player: p, team, score }];
     })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 11);
+    .sort((a, b) => b.score - a.score);
+
+  // Fetch opponent-adjusted form for top 30 candidates
+  const top30 = firstPass.slice(0, 30);
+  const playerTeamMap = new Map(allPlayers.map((p) => [p.id, p.team]));
+  const adjustedFormMap = await buildAdjustedFormMap(
+    top30.map((c) => c.player.id),
+    playerTeamMap,
+    fixtureMap,
+    last5Gws
+  );
+
+  // Second pass: re-score top 30 with adjusted form
+  const top30Rescored = top30.map(({ player: p, team }) => ({
+    player: p,
+    team,
+    score: computeInScore(p, fixtureMap, teamMap, next3Gws, totalManagers, currentGw, adjustedFormMap),
+  }));
+
+  // Merge rescored top 30 + rest (already first-pass scored), re-sort
+  const allScored = [...top30Rescored, ...firstPass.slice(30)].sort(
+    (a, b) => b.score - a.score
+  );
+
+  const ins: TransferInCandidate[] = allScored.slice(0, 11).map(({ player: p, team, score }) => {
+    const player = buildTransferPlayer(p, team, fixtureMap, teamMap, next3Gws);
+    const reasons = generateInReasons(player, p);
+    return { ...player, score: Math.round(score), reasons };
+  });
 
   return { outs, ins };
 }
@@ -525,14 +652,16 @@ export async function buildSquadRows(
 
   // Transfer recommendations
   const totalManagers = bootstrap.total_players ?? 13000000;
-  const { outs: transferOuts, ins: transferIns } = computeTransferLists(
+  const last5Gws = Array.from({ length: 5 }, (_, i) => currentGw - 4 + i).filter((g) => g >= 1);
+  const { outs: transferOuts, ins: transferIns } = await computeTransferLists(
     rows,
     bootstrap.elements,
     teamMap,
     fixtureMap,
     next3Gws,
     totalManagers,
-    currentGw
+    currentGw,
+    last5Gws
   );
 
   const leagues = entryInfo.leagues.classic

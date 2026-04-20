@@ -1,13 +1,14 @@
 "use client";
 
 import React, { useState } from "react";
-import type { TransferOutCandidate, TransferInCandidate } from "@/types/fpl";
+import type { TransferOutCandidate, TransferInCandidate, BacktestReport } from "@/types/fpl";
 import { POSITION_LABELS } from "@/types/fpl";
 import { fdrStyle } from "./FdrLegend";
 
 interface Props {
   outs: TransferOutCandidate[];
   ins: TransferInCandidate[];
+  teamId: string;
 }
 
 function kitUrl(teamCode: number, isGk: boolean) {
@@ -211,11 +212,11 @@ function ScoringModal({ onClose }: { onClose: () => void }) {
             Each player gets a score from <span style={{ color: M.text, fontWeight: 700 }}>0–100</span>. Both lists are ranked independently — a player can appear in Transfer Out without a direct Transfer In replacement being shown. Scores are recalculated fresh every time you load the page.
           </p>
 
-          {/* Backtesting caveat */}
-          <div className="rounded-lg px-3 py-2.5 flex gap-2.5" style={{ background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.25)" }}>
-            <span className="shrink-0 mt-px" style={{ color: M.amber }}>⚠</span>
-            <p className="leading-relaxed" style={{ color: M.amber }}>
-              <span className="font-bold">Not backtested.</span> The component weights are manually tuned heuristics based on FPL conventions and stats theory — they have not been validated against historical gameweek outcomes. Treat the scores as a structured starting point for your own research, not a proven model.
+          {/* Algorithm improvements notice */}
+          <div className="rounded-lg px-3 py-2.5 flex gap-2.5" style={{ background: "rgba(0,255,135,0.07)", border: "1px solid rgba(0,255,135,0.20)" }}>
+            <span className="shrink-0 mt-px" style={{ color: M.green }}>↑</span>
+            <p className="leading-relaxed" style={{ color: M.greenSoft }}>
+              <span className="font-bold">v2 algorithm.</span> Three improvements over the original: (1) GW+1 weighted at 50% in FDR so the immediate fixture matters most, (2) ICT decomposition for MID/FWD replacing a single xGI/90 metric, (3) opponent-adjusted form that rewards points scored against harder sides. Component weights remain manually tuned — use the performance check below to see how current recommendations have scored in recent GWs.
             </p>
           </div>
 
@@ -367,11 +368,13 @@ function ScoringModal({ onClose }: { onClose: () => void }) {
                 pts: "30", label: "Fixture difficulty (FDR)", color: M.green,
                 detail: (
                   <>
-                    Mirrors the OUT formula but inverted — easy fixtures score high:
+                    GW-weighted average FDR — the next gameweek matters most:
                     <code className="block mt-1 px-2 py-1 rounded text-[10px]" style={{ background: M.faint, color: M.text }}>
-                      score = clamp((5 − avgFDR) / 4) × 30
+                      weightedFDR = FDR(GW+1)×0.5 + FDR(GW+2)×0.3 + FDR(GW+3)×0.2{"\n"}
+                      score = clamp((5 − weightedFDR) / 4) × 30
                     </code>
-                    FDR 1 → 30 pts · FDR 3 → 15 pts · FDR 5 → 0 pts. BGW = FDR 5 = 0 pts.
+                    FDR 1 → 30 pts · FDR 3 → 15 pts · FDR 5 → 0 pts.{" "}
+                    <strong style={{ color: M.text }}>Blank GW+1 is capped at 5/30</strong> — a player with no fixture this week can score at most 5 on FDR regardless of future easy games.
                   </>
                 ),
               },
@@ -384,8 +387,12 @@ function ScoringModal({ onClose }: { onClose: () => void }) {
                         <br />• Low xGC/90 (12 pts): <code style={{ background: M.faint, color: M.text }} className="px-1 rounded">clamp((1.5 − xGC/90) / 1.5) × 12</code>
                         <br />• High defensive contribution/90 (8 pts): <code style={{ background: M.faint, color: M.text }} className="px-1 rounded">clamp(defContrib/90 / 0.8) × 8</code>
                       </li>
-                      <li className="mt-1"><strong style={{ color: M.text }}>MID</strong>: <code style={{ background: M.faint, color: M.text }} className="px-1 rounded">clamp(xGI/90 / 0.60) × 20</code></li>
-                      <li className="mt-0.5"><strong style={{ color: M.text }}>FWD</strong>: <code style={{ background: M.faint, color: M.text }} className="px-1 rounded">clamp(xGI/90 / 0.70) × 20</code> — FWDs need a slightly higher bar to score full marks</li>
+                      <li className="mt-1"><strong style={{ color: M.text }}>MID / FWD</strong> — ICT decomposition (20 pts total):
+                        <br />• Influence (8 pts): <code style={{ background: M.faint, color: M.text }} className="px-1 rounded">clamp(influence / 300) × 8</code> — recent direct impact
+                        <br />• Creativity (7 pts): <code style={{ background: M.faint, color: M.text }} className="px-1 rounded">clamp(creativity / 400) × 7</code> — chance creation, key passes
+                        <br />• Threat (5 pts): <code style={{ background: M.faint, color: M.text }} className="px-1 rounded">clamp(threat / 600) × 5</code> — shots on target, goal threat
+                        <br /><span style={{ color: M.muted }}>Separating the three components rewards creative midfielders who assist but don&apos;t score, and pure strikers with high threat but low creativity.</span>
+                      </li>
                     </ul>
                   </>
                 ),
@@ -405,14 +412,16 @@ function ScoringModal({ onClose }: { onClose: () => void }) {
                 ),
               },
               {
-                pts: "12", label: "Form", color: M.green,
+                pts: "12", label: "Form (opponent-adjusted)", color: M.green,
                 detail: (
                   <>
-                    High recent form (last 5 GWs) scores up. Form caps out at 12 before giving full marks:
+                    Recent form adjusted for opposition difficulty. Points scored against harder sides (FDR 4–5) are upweighted; points against easy sides (FDR 1–2) are discounted:
                     <code className="block mt-1 px-2 py-1 rounded text-[10px]" style={{ background: M.faint, color: M.text }}>
-                      score = clamp(form / 12) × 12
+                      FDR 1 × 0.70 · FDR 2 × 0.85 · FDR 3 × 1.0 · FDR 4 × 1.15 · FDR 5 × 1.30{"\n"}
+                      adjustedForm = avg(points × opponentWeight) over last 5 GWs{"\n"}
+                      score = clamp(adjustedForm / 12) × 12
                     </code>
-                    Form 12 → 12 pts · Form 6 → 6 pts · Form 0 → 0 pts.
+                    Falls back to raw FPL form if player history is unavailable.
                   </>
                 ),
               },
@@ -558,7 +567,164 @@ function PlayerListRow({
   );
 }
 
-export default function TransferRecommendations({ outs, ins }: Props) {
+function BacktestPanel({ teamId }: { teamId: string }) {
+  const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [report, setReport] = useState<BacktestReport | null>(null);
+
+  async function runBacktest() {
+    setStatus("loading");
+    try {
+      const res = await fetch(`/api/fpl/backtest/${teamId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: BacktestReport = await res.json();
+      setReport(data);
+      setStatus("done");
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  const hitColor = (rate: number) =>
+    rate >= 0.6 ? "#00ff87" : rate >= 0.4 ? "#f59e0b" : "#ef4444";
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden"
+      style={{ background: "var(--fpl-bg-surface)", border: "1px solid rgba(255,255,255,0.07)" }}
+    >
+      {/* Header */}
+      <div
+        className="px-4 py-3 flex items-center justify-between gap-3"
+        style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+      >
+        <div>
+          <p
+            className="text-[11px] font-black uppercase tracking-widest"
+            style={{ color: "var(--fpl-accent)" }}
+          >
+            Performance Check
+          </p>
+          <p className="text-[10px] mt-0.5" style={{ color: "var(--fpl-muted)" }}>
+            How did the current top 5 picks score in the last 5 GWs?
+          </p>
+        </div>
+        {status === "idle" && (
+          <button
+            onClick={runBacktest}
+            className="shrink-0 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-opacity"
+            style={{ background: "#37003c", color: "#00ff87", border: "1px solid rgba(0,255,135,0.3)" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "0.8"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "1"; }}
+          >
+            Run check
+          </button>
+        )}
+        {status === "loading" && (
+          <span className="text-[10px] shrink-0" style={{ color: "var(--fpl-muted)" }}>
+            Loading…
+          </span>
+        )}
+        {status === "error" && (
+          <span className="text-[10px] shrink-0" style={{ color: "#ef4444" }}>
+            Failed — try again
+          </span>
+        )}
+        {status === "done" && report && (
+          <div
+            className="shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-black tabular-nums"
+            style={{
+              background: `rgba(${report.seasonHitRate >= 0.6 ? "0,255,135" : report.seasonHitRate >= 0.4 ? "245,158,11" : "239,68,68"},0.12)`,
+              color: hitColor(report.seasonHitRate),
+            }}
+          >
+            {Math.round(report.seasonHitRate * 100)}% avg hit rate
+          </div>
+        )}
+      </div>
+
+      {/* Table */}
+      {status === "done" && report && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[10px]" style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                <th className="text-left px-4 py-2 font-semibold" style={{ color: "var(--fpl-muted)" }}>
+                  Player
+                </th>
+                {report.gwNumbers.map((gw) => (
+                  <th key={gw} className="text-center px-2 py-2 font-semibold tabular-nums" style={{ color: "var(--fpl-muted)" }}>
+                    GW{gw}
+                  </th>
+                ))}
+                <th className="text-center px-3 py-2 font-semibold" style={{ color: "var(--fpl-muted)" }}>
+                  Hit Rate
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.players.map((p) => (
+                <tr key={p.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                  <td className="px-4 py-2">
+                    <span
+                      className="font-black"
+                      style={{ fontFamily: "var(--font-barlow)", fontWeight: 800, color: "rgb(var(--fpl-text))" }}
+                    >
+                      {p.name}
+                    </span>
+                    <span className="ml-1.5" style={{ color: "var(--fpl-muted)" }}>
+                      {p.teamShort}
+                    </span>
+                  </td>
+                  {p.gwPoints.map(({ gw, points }) => {
+                    const isHit = points !== null && points > 2;
+                    const isMiss = points !== null && points <= 2;
+                    return (
+                      <td key={gw} className="text-center px-2 py-2 tabular-nums font-bold">
+                        {points === null ? (
+                          <span style={{ color: "rgba(255,255,255,0.15)" }}>–</span>
+                        ) : (
+                          <span
+                            className="inline-flex items-center justify-center w-7 h-5 rounded"
+                            style={{
+                              background: isHit ? "rgba(0,255,135,0.12)" : isMiss ? "rgba(239,68,68,0.10)" : "transparent",
+                              color: isHit ? "#00ff87" : isMiss ? "#ef4444" : "var(--fpl-muted)",
+                            }}
+                          >
+                            {points}
+                          </span>
+                        )}
+                      </td>
+                    );
+                  })}
+                  <td className="text-center px-3 py-2">
+                    <span
+                      className="font-black tabular-nums"
+                      style={{ fontFamily: "var(--font-barlow)", fontWeight: 800, color: hitColor(p.hitRate) }}
+                    >
+                      {Math.round(p.hitRate * 100)}%
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Idle placeholder */}
+      {status === "idle" && (
+        <div className="px-4 py-4 text-center">
+          <p className="text-[10px]" style={{ color: "var(--fpl-muted)" }}>
+            Click &quot;Run check&quot; to see how the current top 5 IN picks performed in the last 5 gameweeks.
+            A hit is any GW where the player scored more than 2 pts.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function TransferRecommendations({ outs, ins, teamId }: Props) {
   const count = Math.max(outs.length, ins.length);
   const [showModal, setShowModal] = useState(false);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
@@ -732,6 +898,9 @@ export default function TransferRecommendations({ outs, ins }: Props) {
         </div>
       </div>
       </>}
+
+      {/* Performance check panel */}
+      <BacktestPanel teamId={teamId} />
     </div>
   );
 }

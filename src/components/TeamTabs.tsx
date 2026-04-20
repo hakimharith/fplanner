@@ -203,7 +203,7 @@ export default function TeamTabs({
       )}
 
       {tab === "transfers" && (
-        <TransferRecommendations outs={transferOuts} ins={transferIns} />
+        <TransferRecommendations outs={transferOuts} ins={transferIns} teamId={teamId} />
       )}
 
       {tab === "plan" && (
