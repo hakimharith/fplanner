@@ -73,8 +73,13 @@ export default function PlayerRow({ player, gameweeks, isBench }: Props) {
 
         if (fixtures.length === 0) {
           return (
-            <td key={gw} className="px-1 py-1.5 text-center">
-              <span className="text-xs" style={{ color: "var(--fpl-muted)" }}>—</span>
+            <td key={gw} className="px-1 py-1.5 text-center min-w-[70px]">
+              <span
+                className="text-[10px] font-bold px-1.5 py-0.5 rounded inline-block"
+                style={{ background: "rgba(255,255,255,0.08)", color: "var(--fpl-muted)" }}
+              >
+                BGW
+              </span>
             </td>
           );
         }

@@ -127,18 +127,6 @@ export default function TeamTabs({
             >
               {(() => { const Icon = TAB_ICONS[t.id]; return <Icon />; })()}
               {t.label}
-              {t.id === "transfers" && (transferOuts.length > 0 || transferIns.length > 0) && (
-                <span
-                  className="ml-1.5 inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-black"
-                  style={
-                    tab === "transfers"
-                      ? { background: "#00ff87", color: "#37003c" }
-                      : { background: "#37003c", color: "white" }
-                  }
-                >
-                  {transferOuts.length}
-                </span>
-              )}
               {t.id === "plan" && planTransferCount > 0 && (
                 <span
                   className="ml-1.5 inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-black"

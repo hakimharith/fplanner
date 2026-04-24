@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import type { TransferOutCandidate, TransferInCandidate, BacktestReport } from "@/types/fpl";
+import type { TransferOutCandidate, TransferInCandidate, BacktestReport, GwFixtureSlot } from "@/types/fpl";
 import { POSITION_LABELS } from "@/types/fpl";
 import { fdrStyle } from "./FdrLegend";
 
@@ -33,19 +33,36 @@ function ScoreBar({ score, variant }: { score: number; variant: "out" | "in" }) 
   );
 }
 
-function FixtureChips({ fixtures }: { fixtures: { opponentShort: string; isHome: boolean; fdr: number }[] }) {
-  if (fixtures.length === 0) {
-    return <span className="text-[10px]" style={{ color: "var(--fpl-muted)" }}>BGW</span>;
-  }
-  return (
-    <div className="flex gap-1 flex-wrap">
-      {fixtures.map((f, i) => (
-        <span key={i} className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={fdrStyle(f.fdr)}>
-          {f.opponentShort} {f.isHome ? "H" : "A"}
+function GwFixtureRow({ slots }: { slots: GwFixtureSlot[] }) {
+  const chips: React.ReactNode[] = [];
+  for (const { gw, fixtures } of slots) {
+    if (chips.length >= 5) break;
+    if (fixtures.length === 0) {
+      chips.push(
+        <span
+          key={`bgw-${gw}`}
+          className="flex-1 text-[9px] font-bold px-1 py-0.5 rounded text-center min-w-0"
+          style={{ background: "rgba(255,255,255,0.08)", color: "var(--fpl-muted)", border: "1px dashed var(--fpl-border)" }}
+        >
+          BGW
         </span>
-      ))}
-    </div>
-  );
+      );
+    } else {
+      for (const fix of fixtures) {
+        if (chips.length >= 5) break;
+        chips.push(
+          <span
+            key={`${gw}-${fix.opponentShort}`}
+            className="flex-1 text-[9px] font-bold px-1 py-0.5 rounded text-center min-w-0 truncate"
+            style={fdrStyle(fix.fdr)}
+          >
+            {fix.opponentShort}({fix.isHome ? "H" : "A"})
+          </span>
+        );
+      }
+    }
+  }
+  return <div className="flex gap-0.5 w-full">{chips}</div>;
 }
 
 function PlayerCard({
@@ -138,10 +155,45 @@ function PlayerCard({
         </div>
       </div>
 
-      {/* Fixtures */}
-      <div className="px-3 py-1.5" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
-        <FixtureChips fixtures={player.nextFixtures} />
-      </div>
+      {/* Fixtures — next 5 GWs with BGW slots */}
+      {player.next5GwFixtures && player.next5GwFixtures.length > 0 ? (
+        <div className="px-3 py-1.5" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+          <GwFixtureRow slots={player.next5GwFixtures} />
+        </div>
+      ) : (
+        <div className="px-3 py-1.5" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+          <span className="text-[10px]" style={{ color: "var(--fpl-muted)" }}>No upcoming fixtures</span>
+        </div>
+      )}
+
+      {/* Last 5 GW points */}
+      {player.last5GwPoints && player.last5GwPoints.length > 0 && (
+        <div className="px-3 py-1.5 flex items-center gap-1" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+          <span className="text-[9px] shrink-0 mr-0.5" style={{ color: "var(--fpl-muted)" }}>Last 5 GWs</span>
+          {player.last5GwPoints.map((pts, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center justify-center rounded tabular-nums font-bold text-[9px]"
+              style={{
+                width: "18px",
+                height: "16px",
+                background: pts === null
+                  ? "rgba(128,128,128,0.08)"
+                  : pts > 2
+                  ? (variant === "in" ? "rgba(22,163,74,0.13)" : "rgba(239,68,68,0.12)")
+                  : "rgba(128,128,128,0.08)",
+                color: pts === null
+                  ? "var(--fpl-muted)"
+                  : pts > 2
+                  ? (variant === "in" ? "var(--fpl-green)" : "#ef4444")
+                  : "var(--fpl-muted)",
+              }}
+            >
+              {pts === null ? "–" : pts}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Reasons — flex-1 so shorter cards grow to fill the row, keeping bottoms aligned */}
       <div className="px-3 pb-2.5 flex-1" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
@@ -846,13 +898,11 @@ export default function TransferRecommendations({ outs, ins, teamId }: Props) {
           <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded" style={{ background: "rgba(0,255,135,0.12)", color: "var(--fpl-green)" }}>
             Transfer In
           </span>
-          <span className="text-[10px]" style={{ color: "var(--fpl-muted)" }}>best available options</span>
         </div>
         <div className="flex items-center gap-2 mb-1">
           <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded" style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>
             Transfer Out
           </span>
-          <span className="text-[10px]" style={{ color: "var(--fpl-muted)" }}>your worst options right now</span>
         </div>
 
         {/* Card pairs — each In/Out pair sits in the same grid row → equal height */}
@@ -879,7 +929,6 @@ export default function TransferRecommendations({ outs, ins, teamId }: Props) {
             <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded" style={{ background: "rgba(0,255,135,0.12)", color: "var(--fpl-green)" }}>
               Transfer In
             </span>
-            <span className="text-[10px]" style={{ color: "var(--fpl-muted)" }}>best available options</span>
           </div>
           <div className="space-y-2">
             {ins.map((p, i) => <PlayerCard key={p.id} player={p} rank={i + 1} variant="in" />)}
@@ -890,7 +939,6 @@ export default function TransferRecommendations({ outs, ins, teamId }: Props) {
             <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded" style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>
               Transfer Out
             </span>
-            <span className="text-[10px]" style={{ color: "var(--fpl-muted)" }}>your worst options right now</span>
           </div>
           <div className="space-y-2">
             {outs.map((p, i) => <PlayerCard key={p.id} player={p} rank={i + 1} variant="out" />)}

@@ -6,6 +6,7 @@ import type {
   FplPlayer,
   FplTeam,
   FplPlayerSummary,
+  GwFixtureSlot,
   SquadPlayerRow,
   PlayerFixtureCell,
   CaptainSuggestion,
@@ -15,34 +16,46 @@ import type {
   FplPlayerPool,
 } from "@/types/fpl";
 
-const BASE =
-  process.env.NEXT_PUBLIC_BASE_URL ||
-  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+// Call FPL directly from the server — no self-loop through our own proxy routes.
+// The proxy routes in /api/fpl/* still exist for browser-side CORS compliance.
+const FPL_BASE = "https://fantasy.premierleague.com/api";
 
-async function fetchInternal<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed: ${path} — ${res.status}`);
+const FPL_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "en-GB,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Referer": "https://fantasy.premierleague.com/",
+  "Origin": "https://fantasy.premierleague.com",
+};
+
+async function fetchFpl<T>(path: string, revalidate: number): Promise<T> {
+  const res = await fetch(`${FPL_BASE}${path}`, {
+    headers: FPL_HEADERS,
+    next: { revalidate },
+  });
+  if (!res.ok) throw new Error(`FPL API failed: ${path} — ${res.status}`);
   return res.json() as Promise<T>;
 }
 
 export async function getBootstrap(): Promise<FplBootstrap> {
-  return fetchInternal<FplBootstrap>("/api/fpl/bootstrap");
+  return fetchFpl<FplBootstrap>("/bootstrap-static/", 3600);
 }
 
 export async function getFixtures(): Promise<FplFixture[]> {
-  return fetchInternal<FplFixture[]>("/api/fpl/fixtures");
+  return fetchFpl<FplFixture[]>("/fixtures/", 3600);
 }
 
 export async function getEntryInfo(teamId: string): Promise<FplEntryInfo> {
-  return fetchInternal<FplEntryInfo>(`/api/fpl/entry/${teamId}`);
+  return fetchFpl<FplEntryInfo>(`/entry/${teamId}/`, 60);
 }
 
 export async function getPicks(teamId: string, gw: number): Promise<FplPicks> {
-  return fetchInternal<FplPicks>(`/api/fpl/picks/${teamId}/${gw}`);
+  return fetchFpl<FplPicks>(`/entry/${teamId}/event/${gw}/picks/`, 60);
 }
 
 export async function getPlayerSummary(playerId: number): Promise<FplPlayerSummary> {
-  return fetchInternal<FplPlayerSummary>(`/api/fpl/player-summary/${playerId}`);
+  return fetchFpl<FplPlayerSummary>(`/element-summary/${playerId}/`, 3600);
 }
 
 // ── Transfer recommendation helpers ──────────────────────────────────────────
@@ -82,6 +95,24 @@ function nextFixturesForPlayer(
     if (result.length >= 3) break;
   }
   return result;
+}
+
+/** Per-GW fixture list for a player over the given GWs. Empty array = BGW. */
+function gwFixturesForPlayer(
+  teamId: number,
+  fixtureMap: Map<number, Map<number, FixtureEntry[]>>,
+  teamMap: Map<number, FplTeam>,
+  gwsToCheck: number[]
+): GwFixtureSlot[] {
+  const gwMap = fixtureMap.get(teamId);
+  return gwsToCheck.map((gw) => ({
+    gw,
+    fixtures: (gwMap?.get(gw) ?? []).map((e) => ({
+      opponentShort: teamMap.get(e.opponentId)?.short_name ?? "?",
+      isHome: e.isHome,
+      fdr: e.fdr,
+    })),
+  }));
 }
 
 /** Clamp a value to [0, 1]. */
@@ -131,22 +162,36 @@ function weightedFdrForPlayer(
 }
 
 /**
- * Build opponent-adjusted form for the given player IDs.
- * Fetches last-N GW history per player and weights each GW's points by the
- * opposition FDR (harder opponent = higher multiplier).
+ * Fetch player history for the given IDs.
+ * Returns:
+ *   adjustedFormMap — opponent-weighted form average (for IN scoring)
+ *   gwPointsMap     — actual points per GW for display (null = no data)
  */
-async function buildAdjustedFormMap(
+async function fetchHistoryData(
   playerIds: number[],
   playerTeamMap: Map<number, number>,
   fixtureMap: Map<number, Map<number, FixtureEntry[]>>,
   last5Gws: number[]
-): Promise<Map<number, number>> {
-  const map = new Map<number, number>();
+): Promise<{
+  adjustedFormMap: Map<number, number>;
+  gwPointsMap: Map<number, (number | null)[]>;
+}> {
+  const adjustedFormMap = new Map<number, number>();
+  const gwPointsMap = new Map<number, (number | null)[]>();
 
   await Promise.all(
     playerIds.map(async (id) => {
       try {
         const summary = await getPlayerSummary(id);
+
+        // Per-GW points for display
+        const pts: (number | null)[] = last5Gws.map((gw) => {
+          const entry = summary.history.find((h) => h.round === gw);
+          return entry !== undefined ? entry.total_points : null;
+        });
+        gwPointsMap.set(id, pts);
+
+        // Opponent-adjusted form
         const recent = summary.history.filter((h) => last5Gws.includes(h.round));
         if (recent.length === 0) return;
 
@@ -158,15 +203,14 @@ async function buildAdjustedFormMap(
           const w = FDR_FORM_WEIGHT[fdr] ?? 1.0;
           totalWeighted += entry.total_points * w;
         }
-
-        map.set(id, totalWeighted / recent.length);
+        adjustedFormMap.set(id, totalWeighted / recent.length);
       } catch {
-        // fall back to raw form
+        // fall back to raw form; gwPointsMap entry absent
       }
     })
   );
 
-  return map;
+  return { adjustedFormMap, gwPointsMap };
 }
 
 /**
@@ -432,6 +476,7 @@ async function computeTransferLists(
   teamMap: Map<number, FplTeam>,
   fixtureMap: Map<number, Map<number, FixtureEntry[]>>,
   next3Gws: number[],
+  next5Gws: number[],
   totalManagers: number,
   currentGw: number,
   last5Gws: number[]
@@ -439,20 +484,7 @@ async function computeTransferLists(
   const squadIds = new Set(squadRows.map((r) => r.id));
   const playerMap = new Map(allPlayers.map((p) => [p.id, p]));
 
-  // ── OUT list: rank squad players by out-score ──────────────────────────────
-  const outs: TransferOutCandidate[] = squadRows
-    .flatMap((row) => {
-      const raw = playerMap.get(row.id);
-      if (!raw) return [];
-      const team = teamMap.get(raw.team);
-      if (!team) return [];
-      const score = Math.round(computeOutScore(raw, fixtureMap, next3Gws));
-      const player = buildTransferPlayer(raw, team, fixtureMap, teamMap, next3Gws);
-      const reasons = generateOutReasons(player, raw);
-      return [{ ...player, score, reasons }];
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 11);
+  const playerTeamMap = new Map(allPlayers.map((p) => [p.id, p.team]));
 
   // ── IN list: two-pass with opponent-adjusted form ──────────────────────────
   const MIN_MINUTES = 90;
@@ -473,17 +505,37 @@ async function computeTransferLists(
     })
     .sort((a, b) => b.score - a.score);
 
-  // Fetch opponent-adjusted form for top 30 candidates
-  const top30 = firstPass.slice(0, 30);
-  const playerTeamMap = new Map(allPlayers.map((p) => [p.id, p.team]));
-  const adjustedFormMap = await buildAdjustedFormMap(
-    top30.map((c) => c.player.id),
+  // Fetch history for top 30 IN candidates + all squad players (OUT list)
+  const top30Ids = firstPass.slice(0, 30).map((c) => c.player.id);
+  const squadIds2 = squadRows.map((r) => r.id);
+  const allHistoryIds = [...new Set([...top30Ids, ...squadIds2])];
+
+  const { adjustedFormMap, gwPointsMap } = await fetchHistoryData(
+    allHistoryIds,
     playerTeamMap,
     fixtureMap,
     last5Gws
   );
 
+  // ── OUT list: rank squad players by out-score ──────────────────────────────
+  const outs: TransferOutCandidate[] = squadRows
+    .flatMap((row) => {
+      const raw = playerMap.get(row.id);
+      if (!raw) return [];
+      const team = teamMap.get(raw.team);
+      if (!team) return [];
+      const score = Math.round(computeOutScore(raw, fixtureMap, next3Gws));
+      const player = buildTransferPlayer(raw, team, fixtureMap, teamMap, next3Gws);
+      const reasons = generateOutReasons(player, raw);
+      const last5GwPoints = gwPointsMap.get(row.id);
+      const next5GwFixtures = gwFixturesForPlayer(raw.team, fixtureMap, teamMap, next5Gws);
+      return [{ ...player, score, reasons, last5GwPoints, next5GwFixtures }];
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 11);
+
   // Second pass: re-score top 30 with adjusted form
+  const top30 = firstPass.slice(0, 30);
   const top30Rescored = top30.map(({ player: p, team }) => ({
     player: p,
     team,
@@ -498,7 +550,9 @@ async function computeTransferLists(
   const ins: TransferInCandidate[] = allScored.slice(0, 11).map(({ player: p, team, score }) => {
     const player = buildTransferPlayer(p, team, fixtureMap, teamMap, next3Gws);
     const reasons = generateInReasons(player, p);
-    return { ...player, score: Math.round(score), reasons };
+    const last5GwPoints = gwPointsMap.get(p.id);
+    const next5GwFixtures = gwFixturesForPlayer(p.team, fixtureMap, teamMap, next5Gws);
+    return { ...player, score: Math.round(score), reasons, last5GwPoints, next5GwFixtures };
   });
 
   return { outs, ins };
@@ -652,6 +706,7 @@ export async function buildSquadRows(
 
   // Transfer recommendations
   const totalManagers = bootstrap.total_players ?? 13000000;
+  const next5Gws = remainingGws.slice(0, 5);
   const last5Gws = Array.from({ length: 5 }, (_, i) => currentGw - 4 + i).filter((g) => g >= 1);
   const { outs: transferOuts, ins: transferIns } = await computeTransferLists(
     rows,
@@ -659,6 +714,7 @@ export async function buildSquadRows(
     teamMap,
     fixtureMap,
     next3Gws,
+    next5Gws,
     totalManagers,
     currentGw,
     last5Gws

@@ -191,6 +191,11 @@ export interface TransferPlayer {
   nextFixtures: { opponentShort: string; isHome: boolean; fdr: number }[];
 }
 
+export type GwFixtureSlot = {
+  gw: number;
+  fixtures: { opponentShort: string; isHome: boolean; fdr: number }[];
+};
+
 export interface TransferOutCandidate {
   id: number;
   name: string;
@@ -204,6 +209,8 @@ export interface TransferOutCandidate {
   nextFixtures: { opponentShort: string; isHome: boolean; fdr: number }[];
   score: number;
   reasons: string[];
+  last5GwPoints?: (number | null)[];
+  next5GwFixtures?: GwFixtureSlot[];
 }
 
 export interface TransferInCandidate {
@@ -219,6 +226,8 @@ export interface TransferInCandidate {
   nextFixtures: { opponentShort: string; isHome: boolean; fdr: number }[];
   score: number;
   reasons: string[];
+  last5GwPoints?: (number | null)[];
+  next5GwFixtures?: GwFixtureSlot[];
 }
 
 /** @deprecated Use TransferOutCandidate / TransferInCandidate instead. */

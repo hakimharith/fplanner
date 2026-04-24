@@ -154,7 +154,12 @@ export default function PlayerPitchCard({
           ))}
         </div>
       ) : (
-        <div className="text-[11px] text-white/50 w-full text-center">BGW</div>
+        <div
+          className="text-[10px] font-bold w-full text-center px-1 py-0.5 rounded"
+          style={{ background: "rgba(255,255,255,0.10)", color: "rgba(255,255,255,0.45)", border: "1px dashed rgba(255,255,255,0.25)" }}
+        >
+          BGW
+        </div>
       )}
     </div>
   );

@@ -40,7 +40,7 @@ export default function CountdownClock({ deadline, nextGw }: Props) {
   if (timeLeft === undefined) {
     return (
       <span className="text-xs uppercase tracking-widest font-bold" style={{ color: "var(--fpl-muted)" }}>
-        Deadline
+        GW{nextGw} Deadline
       </span>
     );
   }
@@ -70,7 +70,7 @@ export default function CountdownClock({ deadline, nextGw }: Props) {
     <div className="flex flex-col items-end gap-0.5">
       <div className="flex items-center gap-1.5">
         <span className="text-xs uppercase tracking-widest font-bold" style={{ color: isUrgent ? "#ef4444" : "var(--fpl-muted)" }}>
-          {isUrgent ? "Closing!" : "Deadline"}
+          {isUrgent ? `GW${nextGw} Closing!` : `GW${nextGw} Deadline`}
         </span>
         <div className="flex items-center gap-1">
           {days > 0 && (
