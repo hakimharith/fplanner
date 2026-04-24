@@ -148,7 +148,8 @@ export default function TeamSidebar({
       <div
         className="px-6 py-5 flex items-center gap-4"
         style={{
-          background: "#37003c",
+          background: "#2d0039",
+          borderRight: "3px solid #00ff87",
           borderBottom: "1px solid rgba(255,255,255,0.1)",
         }}
       >
